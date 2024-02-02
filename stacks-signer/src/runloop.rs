@@ -13,16 +13,18 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 use std::collections::VecDeque;
-use std::sync::mpsc::Sender;
-use std::time::Duration;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::time::{Duration, Instant};
 
 use blockstack_lib::burnchains::Txid;
 use blockstack_lib::chainstate::nakamoto::NakamotoBlock;
 use blockstack_lib::net::api::postblock_proposal::BlockValidateResponse;
 use hashbrown::{HashMap, HashSet};
+use libsigner::ping::{Packet as LatencyPacket, Ping};
 use libsigner::{
-    BlockRejection, BlockResponse, RejectCode, SignerEvent, SignerMessage, SignerRunLoop,
+    BlockRejection, BlockResponse, RejectCode, SignerEvent, SignerMessage, SignerRunLoop, SlotId,
 };
 use slog::{slog_debug, slog_error, slog_info, slog_warn};
 use stacks_common::codec::{read_next, StacksMessageCodec};
@@ -54,6 +56,11 @@ pub enum RunLoopCommand {
         is_taproot: bool,
         /// Taproot merkle root
         merkle_root: Option<MerkleRoot>,
+    },
+    /// Send this Command to the runlop to start an RTT broadcast.
+    Ping {
+        /// Attach a payload of random bytes to the Ping/Pong messages.
+        payload_size: u32,
     },
 }
 
@@ -133,6 +140,12 @@ pub struct RunLoop<C> {
     /// Transactions that we expect to see in the next block
     // TODO: fill this in and do proper garbage collection
     pub transactions: Vec<Txid>,
+    /// Each entry is a distinct Ping request.
+    ping_entries: HashMap<u64, Instant>,
+    /// Send RTT results back to the pinger thread.
+    ping_send: Option<Sender<(u64, Duration)>>,
+    /// Set of processed RTT entries. pong.id() and slot_id.
+    ping_tickets: HashSet<(u64, u32)>,
 }
 
 impl<C: Coordinator> RunLoop<C> {
@@ -165,10 +178,9 @@ impl<C: Coordinator> RunLoop<C> {
                 info!("Starting DKG");
                 match self.coordinator.start_dkg_round() {
                     Ok(msg) => {
-                        let ack = self
+                        let _ = self
                             .stackerdb
                             .send_message_with_retry(self.signing_round.signer_id, msg.into());
-                        debug!("ACK: {:?}", ack);
                         self.state = State::Dkg;
                         true
                     }
@@ -201,10 +213,9 @@ impl<C: Coordinator> RunLoop<C> {
                     *merkle_root,
                 ) {
                     Ok(msg) => {
-                        let ack = self
+                        let _ = self
                             .stackerdb
                             .send_message_with_retry(self.signing_round.signer_id, msg.into());
-                        debug!("ACK: {:?}", ack);
                         self.state = State::Sign;
                         block_info.signing_round = true;
                         true
@@ -216,6 +227,17 @@ impl<C: Coordinator> RunLoop<C> {
                         false
                     }
                 }
+            }
+            RunLoopCommand::Ping { payload_size } => {
+                let ping = Ping::new(*payload_size as usize);
+                let id = ping.id();
+                debug!("Pinging RTT oberservers with id: {id}...");
+                self.ping_entries.insert(id, Instant::now());
+                let _ = self
+                    .stackerdb
+                    .send_message_with_retry(self.signing_round.signer_id, ping.into());
+
+                true
             }
         }
     }
@@ -322,16 +344,20 @@ impl<C: Coordinator> RunLoop<C> {
     fn handle_signer_messages(
         &mut self,
         res: Sender<Vec<OperationResult>>,
-        messages: Vec<SignerMessage>,
+        messages: Vec<(SignerMessage, SlotId)>,
     ) {
         let (_coordinator_id, coordinator_public_key) =
             calculate_coordinator(&self.signing_round.public_keys, &self.stacks_client);
         let packets: Vec<Packet> = messages
             .into_iter()
-            .filter_map(|msg| match msg {
+            .filter_map(|(msg, slot_id)| match msg {
                 SignerMessage::BlockResponse(_) => None,
                 SignerMessage::Packet(packet) => {
                     self.verify_packet(packet, &coordinator_public_key)
+                }
+                SignerMessage::Ping(packet) => {
+                    self.process_ping_packet(packet, slot_id);
+                    None
                 }
             })
             .collect();
@@ -674,15 +700,47 @@ impl<C: Coordinator> RunLoop<C> {
             outbound_messages.len()
         );
         for msg in outbound_messages {
-            let ack = self
+            if let Err(e) = self
                 .stackerdb
-                .send_message_with_retry(self.signing_round.signer_id, msg.into());
-            if let Ok(ack) = ack {
-                debug!("ACK: {:?}", ack);
-            } else {
-                warn!("Failed to send message to stacker-db instance: {:?}", ack);
+                .send_message_with_retry(self.signing_round.signer_id, msg.into())
+            {
+                warn!("Failed to send message to stacker-db instance: {:?}", e);
             }
         }
+    }
+
+    fn process_ping_packet(&mut self, packet: LatencyPacket, packet_slot_id: u32) {
+        let signer_id = self.signing_round.signer_id;
+        let Some(packet) = LatencyPacket::verify_packet(packet, signer_id, packet_slot_id) else {
+            return;
+        };
+
+        match packet {
+            LatencyPacket::Pong(pong) => {
+                let id = pong.id();
+                // Signer won't react to Pongs from Pings not initiated by it.
+                self.ping_entries.get(&id).map(|tick| {
+                    let variate = tick.elapsed();
+                    if self.ping_tickets.insert((id, packet_slot_id)) {
+                        info!("New RTT for id {id}: {:?}", variate);
+                        self.ping_send.as_ref().map(|tx| tx.send((id, variate)));
+                    }
+                });
+            }
+            LatencyPacket::Ping(ping) => {
+                let _ = self
+                    .stackerdb
+                    .send_message_with_retry(signer_id, ping.pong().into())
+                    .map_err(|e| warn!("Sending RTT probe failed! noop with error: {e}"));
+            }
+        }
+    }
+
+    /// Set a channel for the RTT collector thread
+    pub fn subscribe_ping_collector(&mut self) -> Receiver<(u64, Duration)> {
+        let (tx, rx) = channel();
+        self.ping_send = Some(tx);
+        rx
     }
 }
 
@@ -757,6 +815,9 @@ impl From<&Config> for RunLoop<FireCoordinator<v2::Aggregator>> {
             mainnet: config.network == Network::Mainnet,
             blocks: HashMap::new(),
             transactions: Vec::new(),
+            ping_entries: HashMap::new(),
+            ping_send: None,
+            ping_tickets: HashSet::new(),
         }
     }
 }
@@ -869,11 +930,22 @@ mod tests {
     use std::net::TcpListener;
     use std::thread::{sleep, spawn};
 
+    use libstackerdb::StackerDBChunkData;
     use rand::distributions::Standard;
     use rand::Rng;
 
     use super::*;
     use crate::client::stacks_client::tests::{write_response, TestConfig};
+
+    use std::{
+        io::{BufReader, Read, Write},
+        sync::{atomic::AtomicBool, Arc},
+        thread,
+    };
+
+    use assert_matches::assert_matches;
+    use libsigner::PING_SLOT_ID;
+    use libsigner::{ping::is_ping_slot, SignerStopSignaler};
 
     fn generate_random_consensus_hash() -> String {
         let rng = rand::thread_rng();
@@ -892,7 +964,7 @@ mod tests {
         );
 
         spawn(move || {
-            write_response(mock_server, response.as_bytes());
+            write_response(&mock_server, response.as_bytes());
         });
         sleep(Duration::from_millis(100));
     }
@@ -967,5 +1039,168 @@ mod tests {
             all_keys_same,
             "All coordinator public keys should be the same"
         );
+    }
+
+    #[test]
+    fn ping_command_sent() {
+        let ctx = TestConfig::new();
+        let mut cfg = Config::load_from_file("./src/tests/conf/signer-0.toml").unwrap();
+        cfg.node_host = ctx.host().trim_start_matches("http://").parse().unwrap();
+
+        let mut run_loop = RunLoop::from(&cfg);
+        let (e_tx, e_rx) = channel();
+        let (c_tx, c_rx) = channel();
+        let (r_tx, _) = channel();
+
+        let handle = thread::spawn(move || {
+            run_loop.main_loop(
+                e_rx,
+                c_rx,
+                r_tx,
+                SignerStopSignaler::new(Arc::new(AtomicBool::new(false)), cfg.endpoint),
+            );
+            run_loop
+        });
+
+        // initialize requests
+        write_response(
+            &ctx.mock_server,
+            b"HTTP/1.1 200 Ok\r\n\r\n{\"contract_id\":\"ST000000000000000000002AMW42H.pox-3\",\"pox_activation_threshold_ustx\":829371801288885,\"first_burnchain_block_height\":2000000,\"current_burnchain_block_height\":2572192,\"prepare_phase_block_length\":50,\"reward_phase_block_length\":1000,\"reward_slots\":2000,\"rejection_fraction\":12,\"total_liquid_supply_ustx\":41468590064444294,\"current_cycle\":{\"id\":544,\"min_threshold_ustx\":5190000000000,\"stacked_ustx\":853258144644000,\"is_pox_active\":true},\"next_cycle\":{\"id\":545,\"min_threshold_ustx\":5190000000000,\"min_increment_ustx\":5183573758055,\"stacked_ustx\":847278759574000,\"prepare_phase_start_block_height\":2572200,\"blocks_until_prepare_phase\":8,\"reward_phase_start_block_height\":2572250,\"blocks_until_reward_phase\":58,\"ustx_until_pox_rejection\":4976230807733304},\"min_amount_ustx\":5190000000000,\"prepare_cycle_length\":50,\"reward_cycle_id\":544,\"reward_cycle_length\":1050,\"rejection_votes_left_required\":4976230807733304,\"next_reward_cycle_in\":58,\"contract_versions\":[{\"contract_id\":\"ST000000000000000000002AMW42H.pox\",\"activation_burnchain_block_height\":2000000,\"first_reward_cycle_id\":0},{\"contract_id\":\"ST000000000000000000002AMW42H.pox-2\",\"activation_burnchain_block_height\":2422102,\"first_reward_cycle_id\":403},{\"contract_id\":\"ST000000000000000000002AMW42H.pox-3\",\"activation_burnchain_block_height\":2432545,\"first_reward_cycle_id\":412}]}",
+        );
+        write_response(
+        &ctx.mock_server,
+        b"HTTP/1.1 200 Ok\r\n\r\n{\"okay\":true,\"result\":\"0x0a020000002103beca18a0e51ea31d8e66f58a245d54791b277ad08e1e9826bf5f814334ac77e0\"}",
+        );
+
+        //test that run_loop sends a ping
+        c_tx.send(RunLoopCommand::Ping { payload_size: 0 }).unwrap();
+        let mut stream = ctx.mock_server.accept().unwrap().0;
+        //mock response
+        let body = "{\"accepted\":true,\"metadata\":{\"slot_id\":10,\"slot_version\":1,\"data_hash\":\"1452a9c5dd13034a788bd9ae3a0c6e139c02f5a277d6729166af489e5cc6cffe\",\"signature\":\"01d13198d6646c6f7190d31a9f3825af93d5ac9525531a055e6d1007d7d1ea72c011daa979823c8f67c2b40fd751e0bdbc97ef130f9eb498727437a060ddc82bc1\"}}";
+        let response = format!(
+            "HTTP/1.1 200 Ok\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+        stream.flush().unwrap();
+        let mut buf = vec![0; 1024];
+        let mut reader = BufReader::new(&stream);
+        let len = reader.read(&mut buf).unwrap();
+        stream.shutdown(std::net::Shutdown::Both).unwrap();
+        let response_body = std::str::from_utf8(&buf[..len])
+            .unwrap()
+            .split_once("\r\n\r\n")
+            .unwrap()
+            .1;
+
+        let chunk: StackerDBChunkData = serde_json::from_str(response_body).unwrap();
+        let msg: SignerMessage = bincode::deserialize(&chunk.data).unwrap();
+        // make the main_loop exit
+        drop(e_tx);
+        drop(c_tx);
+        let run_loop = handle.join().unwrap();
+
+        assert_matches!(msg, SignerMessage::Ping(LatencyPacket::Ping(ping)) => {
+        //assert on ping entry stored in map.
+            run_loop.ping_entries.get(&ping.id()).unwrap()
+        });
+    }
+
+    #[test]
+    fn process_ping_packet_filters_own_events() {
+        let cfg = Config::load_from_file("./src/tests/conf/signer-0.toml").unwrap();
+        let mut run_loop = RunLoop::from(&cfg);
+
+        let slot_id = PING_SLOT_ID;
+        assert!(is_ping_slot(slot_id));
+
+        let msg = Ping::new(0).into();
+
+        // doesnt block
+        run_loop.process_ping_packet(msg, slot_id);
+    }
+
+    #[test]
+    fn process_ping_packet_pings() {
+        let ctx = TestConfig::new();
+        let mut cfg = Config::load_from_file("./src/tests/conf/signer-1.toml").unwrap();
+        cfg.node_host = ctx.host().trim_start_matches("http://").parse().unwrap();
+        let mut run_loop = RunLoop::from(&cfg);
+
+        let slot_id = PING_SLOT_ID;
+        assert!(is_ping_slot(slot_id));
+
+        let ping = Ping::new(0);
+        let ping_id = ping.id();
+
+        let packet = LatencyPacket::from(ping);
+        //The incoming Ping does not belong to you.
+        assert_ne!(packet.slot_id(cfg.signer_id), slot_id);
+
+        // blocks
+        let handle = thread::spawn(move || {
+            run_loop.process_ping_packet(packet, slot_id);
+            run_loop
+        });
+
+        //serve response
+        let mut stream = ctx.mock_server.accept().unwrap().0;
+        //mock response
+        let body = "{\"accepted\":true,\"metadata\":{\"slot_id\":10,\"slot_version\":0,\"data_hash\":\"1452a9c5dd13034a788bd9ae3a0c6e139c02f5a277d6729166af489e5cc6cffe\",\"signature\":\"01d13198d6646c6f7190d31a9f3825af93d5ac9525531a055e6d1007d7d1ea72c011daa979823c8f67c2b40fd751e0bdbc97ef130f9eb498727437a060ddc82bc1\"}}";
+        let response = format!(
+            "HTTP/1.1 200 Ok\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+        stream.flush().unwrap();
+        let mut buf = vec![0; 1024];
+        let mut reader = BufReader::new(&stream);
+        let len = reader.read(&mut buf).unwrap();
+        stream.shutdown(std::net::Shutdown::Both).unwrap();
+        let response_body = std::str::from_utf8(&buf[..len])
+            .unwrap()
+            .split_once("\r\n\r\n")
+            .unwrap()
+            .1;
+
+        handle.join().unwrap();
+
+        // assert on received chunk
+        let chunk: StackerDBChunkData = serde_json::from_str(response_body).unwrap();
+        let msg: SignerMessage = bincode::deserialize(&chunk.data).unwrap();
+        assert_matches!(msg, SignerMessage::Ping(LatencyPacket::Pong(pong)) => {
+            assert_eq!(ping_id, pong.id());
+        });
+    }
+
+    #[test]
+    fn process_ping_packet_pongs() {
+        let cfg = Config::load_from_file("./src/tests/conf/signer-1.toml").unwrap();
+
+        let mut run_loop = RunLoop::from(&cfg);
+        let rx = run_loop.subscribe_ping_collector();
+
+        let slot_id = PING_SLOT_ID;
+        assert!(is_ping_slot(slot_id));
+
+        let pong = Ping::new(0).pong();
+        let pong_id = pong.id();
+        run_loop.ping_entries.insert(pong_id, Instant::now());
+
+        let packet = LatencyPacket::from(pong);
+        //The incoming Ping does not belong to you.
+        assert_ne!(packet.slot_id(cfg.signer_id), slot_id);
+
+        // doesnt block
+        run_loop.process_ping_packet(packet.clone(), slot_id);
+
+        // RTT sent
+        rx.recv().unwrap();
+
+        // event is processed once
+        run_loop.process_ping_packet(packet, slot_id);
+        drop(run_loop);
+        // empty rx.
+        rx.recv().unwrap_err();
     }
 }

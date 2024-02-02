@@ -28,8 +28,8 @@ use stacks_common::types::chainstate::StacksAddress;
 use stacks_common::util::get_epoch_time_secs;
 use stacks_common::util::hash::{hex_bytes, to_hex};
 
-use super::burnchains::bitcoin_regtest_controller::ParsedUTXO;
 use super::Config;
+use crate::burnchains::bitcoin_regtest_controller::ParsedUTXO;
 use crate::helium::RunLoop;
 use crate::tests::neon_integrations::{get_chain_info, next_block_and_wait};
 use crate::BitcoinRegtestController;
@@ -190,6 +190,8 @@ pub fn serialize_sign_tx_anchor_mode_version(
     unsigned_tx.anchor_mode = anchor_mode;
     unsigned_tx.post_condition_mode = TransactionPostConditionMode::Allow;
     unsigned_tx.chain_id = CHAIN_ID_TESTNET;
+
+    println!("{unsigned_tx:?}");
 
     let mut tx_signer = StacksTransactionSigner::new(&unsigned_tx);
     tx_signer.sign_origin(sender).unwrap();

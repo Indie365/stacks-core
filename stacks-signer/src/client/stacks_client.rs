@@ -13,6 +13,7 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 use blockstack_lib::burnchains::Txid;
 use blockstack_lib::chainstate::nakamoto::NakamotoBlock;
 use blockstack_lib::chainstate::stacks::boot::POX_4_NAME;
@@ -25,8 +26,10 @@ use blockstack_lib::net::api::callreadonly::CallReadOnlyResponse;
 use blockstack_lib::net::api::getpoxinfo::RPCPoxInfoData;
 use blockstack_lib::net::api::postblock_proposal::NakamotoBlockProposal;
 use blockstack_lib::util_lib::boot::boot_code_id;
+use clarity::vm::types::StandardPrincipalData;
 use clarity::vm::{ClarityName, ContractName, Value as ClarityValue};
-use serde_json::json;
+use reqwest::blocking::Client;
+use serde_json::{json, Value};
 use slog::slog_debug;
 use stacks_common::codec::StacksMessageCodec;
 use stacks_common::consts::CHAIN_ID_MAINNET;
@@ -50,7 +53,7 @@ pub struct StacksClient {
     /// The chain we are interacting with
     chain_id: u32,
     /// The Client used to make HTTP connects
-    stacks_node_client: reqwest::blocking::Client,
+    stacks_node_client: Client,
 }
 
 impl From<&Config> for StacksClient {
@@ -61,7 +64,7 @@ impl From<&Config> for StacksClient {
             http_origin: format!("http://{}", config.node_host),
             tx_version: config.network.to_transaction_version(),
             chain_id: config.network.to_chain_id(),
-            stacks_node_client: reqwest::blocking::Client::new(),
+            stacks_node_client: Client::new(),
         }
     }
 }
@@ -204,7 +207,7 @@ impl StacksClient {
             function_name,
             function_args,
         )?;
-        self.submit_tx(&signed_tx)
+        StacksClient::submit_tx(&signed_tx, &self.stacks_node_client, &self.http_origin)
     }
 
     /// Helper function to create a stacks transaction for a modifying contract call
@@ -256,12 +259,16 @@ impl StacksClient {
     }
 
     /// Helper function to submit a transaction to the Stacks node
-    fn submit_tx(&self, tx: &StacksTransaction) -> Result<Txid, ClientError> {
+    pub fn submit_tx(
+        tx: &StacksTransaction,
+        client: &Client,
+        http_origin: &str,
+    ) -> Result<Txid, ClientError> {
         let txid = tx.txid();
         let tx = tx.serialize_to_vec();
         let send_request = || {
-            self.stacks_node_client
-                .post(self.transaction_path())
+            client
+                .post(StacksClient::transaction_path(http_origin))
                 .header("Content-Type", "application/octet-stream")
                 .body(tx.clone())
                 .send()
@@ -272,6 +279,27 @@ impl StacksClient {
             return Err(ClientError::RequestFailure(response.status()));
         }
         Ok(txid)
+    }
+
+    /// fetch the onchain contract source
+    pub fn get_contract_source(
+        http_origin: &str,
+        principal: &StandardPrincipalData,
+        contract_name: &str,
+        client: &Client,
+    ) -> Result<String, ClientError> {
+        let url = Self::contract_path(http_origin, &principal.to_string(), contract_name);
+        let request = || client.get(&url).send().map_err(backoff::Error::transient);
+        let res = retry_with_exponential_backoff(request)?;
+
+        if !res.status().is_success() {
+            return Err(ClientError::RequestFailure(res.status()));
+        }
+        let res: Value = res.json()?;
+        let Value::String(ref contract) = res["source"] else {
+            panic!("Missing source field in {res} from {url}")
+        };
+        Ok(contract.clone())
     }
 
     /// Makes a read only contract call to a stacks contract
@@ -321,8 +349,15 @@ impl StacksClient {
         format!("{}/v2/pox", self.http_origin)
     }
 
-    fn transaction_path(&self) -> String {
-        format!("{}/v2/transactions", self.http_origin)
+    fn transaction_path(http_origin: &str) -> String {
+        format!("{}/v2/transactions", http_origin)
+    }
+
+    fn contract_path(http_origin: &str, principal: &str, contract_name: &str) -> String {
+        format!(
+            "{}/v2/contracts/source/{}/{}",
+            http_origin, principal, contract_name
+        )
     }
 
     fn read_only_path(
@@ -347,7 +382,7 @@ impl StacksClient {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub mod tests {
     use std::io::{BufWriter, Read, Write};
     use std::net::{SocketAddr, TcpListener};
     use std::thread::spawn;
@@ -355,9 +390,9 @@ pub(crate) mod tests {
     use super::*;
     use crate::client::ClientError;
 
-    pub(crate) struct TestConfig {
-        pub(crate) mock_server: TcpListener,
-        pub(crate) client: StacksClient,
+    pub struct TestConfig {
+        pub mock_server: TcpListener,
+        pub client: StacksClient,
     }
 
     impl TestConfig {
@@ -378,9 +413,13 @@ pub(crate) mod tests {
                 client,
             }
         }
+
+        pub fn host(&self) -> String {
+            self.client.http_origin.clone()
+        }
     }
 
-    pub(crate) fn write_response(mock_server: TcpListener, bytes: &[u8]) -> [u8; 1024] {
+    pub fn write_response(mock_server: &TcpListener, bytes: &[u8]) -> [u8; 1024] {
         debug!("Writing a response...");
         let mut request_bytes = [0u8; 1024];
         {
@@ -403,7 +442,7 @@ pub(crate) mod tests {
             )
         });
         write_response(
-            config.mock_server,
+            &config.mock_server,
             b"HTTP/1.1 200 OK\n\n{\"okay\":true,\"result\":\"0x070d0000000473425443\"}",
         );
         let result = h.join().unwrap().unwrap();
@@ -422,7 +461,7 @@ pub(crate) mod tests {
             )
         });
         write_response(
-            config.mock_server,
+            &config.mock_server,
             b"HTTP/1.1 200 OK\n\n{\"okay\":true,\"result\":\"0x070d0000000473425443\"}",
         );
         let result = h.join().unwrap().unwrap();
@@ -441,7 +480,7 @@ pub(crate) mod tests {
             )
         });
         write_response(
-            config.mock_server,
+            &config.mock_server,
             b"HTTP/1.1 200 OK\n\n{\"okay\":false,\"cause\":\"Some reason\"}",
         );
         let result = h.join().unwrap();
@@ -460,7 +499,7 @@ pub(crate) mod tests {
                 &[],
             )
         });
-        write_response(config.mock_server, b"HTTP/1.1 400 Bad Request\n\n");
+        write_response(&config.mock_server, b"HTTP/1.1 400 Bad Request\n\n");
         let result = h.join().unwrap();
         assert!(matches!(
             result,
@@ -482,7 +521,7 @@ pub(crate) mod tests {
                 &[],
             )
         });
-        write_response(config.mock_server, b"HTTP/1.1 404 Not Found\n\n");
+        write_response(&config.mock_server, b"HTTP/1.1 404 Not Found\n\n");
         let result = h.join().unwrap();
         assert!(matches!(
             result,
@@ -495,7 +534,7 @@ pub(crate) mod tests {
         let config = TestConfig::new();
         let h = spawn(move || config.client.get_current_reward_cycle());
         write_response(
-            config.mock_server,
+            &config.mock_server,
             b"HTTP/1.1 200 Ok\n\n{\"contract_id\":\"ST000000000000000000002AMW42H.pox-3\",\"pox_activation_threshold_ustx\":829371801288885,\"first_burnchain_block_height\":2000000,\"current_burnchain_block_height\":2572192,\"prepare_phase_block_length\":50,\"reward_phase_block_length\":1000,\"reward_slots\":2000,\"rejection_fraction\":12,\"total_liquid_supply_ustx\":41468590064444294,\"current_cycle\":{\"id\":544,\"min_threshold_ustx\":5190000000000,\"stacked_ustx\":853258144644000,\"is_pox_active\":true},\"next_cycle\":{\"id\":545,\"min_threshold_ustx\":5190000000000,\"min_increment_ustx\":5183573758055,\"stacked_ustx\":847278759574000,\"prepare_phase_start_block_height\":2572200,\"blocks_until_prepare_phase\":8,\"reward_phase_start_block_height\":2572250,\"blocks_until_reward_phase\":58,\"ustx_until_pox_rejection\":4976230807733304},\"min_amount_ustx\":5190000000000,\"prepare_cycle_length\":50,\"reward_cycle_id\":544,\"reward_cycle_length\":1050,\"rejection_votes_left_required\":4976230807733304,\"next_reward_cycle_in\":58,\"contract_versions\":[{\"contract_id\":\"ST000000000000000000002AMW42H.pox\",\"activation_burnchain_block_height\":2000000,\"first_reward_cycle_id\":0},{\"contract_id\":\"ST000000000000000000002AMW42H.pox-2\",\"activation_burnchain_block_height\":2422102,\"first_reward_cycle_id\":403},{\"contract_id\":\"ST000000000000000000002AMW42H.pox-3\",\"activation_burnchain_block_height\":2432545,\"first_reward_cycle_id\":412}]}",
         );
         let current_cycle_id = h.join().unwrap().unwrap();
@@ -507,7 +546,7 @@ pub(crate) mod tests {
         let config = TestConfig::new();
         let h = spawn(move || config.client.get_current_reward_cycle());
         write_response(
-            config.mock_server,
+            &config.mock_server,
             b"HTTP/1.1 200 Ok\n\n{\"current_cycle\":{\"id\":\"fake id\", \"is_pox_active\":false}}",
         );
         let res = h.join().unwrap();
@@ -519,7 +558,7 @@ pub(crate) mod tests {
         let config = TestConfig::new();
         let h = spawn(move || config.client.get_current_reward_cycle());
         write_response(
-            config.mock_server,
+            &config.mock_server,
             b"HTTP/1.1 200 Ok\n\n{\"current_cycle\":{\"is_pox_active\":false}}",
         );
         let res = h.join().unwrap();
@@ -591,10 +630,16 @@ pub(crate) mod tests {
             + 1;
 
         let tx_clone = tx.clone();
-        let h = spawn(move || config.client.submit_tx(&tx_clone));
+        let h = spawn(move || {
+            StacksClient::submit_tx(
+                &tx_clone,
+                &config.client.stacks_node_client,
+                &config.client.http_origin,
+            )
+        });
 
         let request_bytes = write_response(
-            config.mock_server,
+            &config.mock_server,
             format!("HTTP/1.1 200 OK\n\n{}", tx.txid()).as_bytes(),
         );
         let returned_txid = h.join().unwrap().unwrap();
@@ -621,7 +666,7 @@ pub(crate) mod tests {
             )
         });
         write_response(
-            config.mock_server,
+            &config.mock_server,
             b"HTTP/1.1 200 OK\n\n4e99f99bc4a05437abb8c7d0c306618f45b203196498e2ebe287f10497124958",
         );
         assert!(h.join().unwrap().is_ok());
@@ -632,7 +677,7 @@ pub(crate) mod tests {
         let config = TestConfig::new();
         let h = spawn(move || config.client.get_stacks_tip_consensus_hash());
         write_response(
-            config.mock_server,
+            &config.mock_server,
             b"HTTP/1.1 200 OK\n\n{\"stacks_tip_consensus_hash\": \"3b593b712f8310768bf16e58f378aea999b8aa3b\"}",
         );
         assert!(h.join().unwrap().is_ok());
@@ -643,9 +688,29 @@ pub(crate) mod tests {
         let config = TestConfig::new();
         let h = spawn(move || config.client.get_stacks_tip_consensus_hash());
         write_response(
-            config.mock_server,
+            &config.mock_server,
             b"HTTP/1.1 200 OK\n\n4e99f99bc4a05437abb8c7d0c306618f45b203196498e2ebe287f10497124958",
         );
         assert!(h.join().unwrap().is_err());
+    }
+
+    #[test]
+    fn contract_source_response() {
+        let config = TestConfig::new();
+        let h = spawn(move || {
+            StacksClient::get_contract_source(
+                &config.client.http_origin,
+                &StandardPrincipalData::transient(),
+                "hello-world",
+                &config.client.stacks_node_client,
+            )
+        });
+        write_response(
+            &config.mock_server,
+            b"HTTP/1.1 200 OK\n\n{\"proof\":\"0x00\",\"publish_height\":3,\"source\":\";;stackerdb\"}
+            ",
+        );
+
+        assert_eq!(";;stackerdb", h.join().unwrap().unwrap());
     }
 }

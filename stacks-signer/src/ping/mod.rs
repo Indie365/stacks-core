@@ -1,9 +1,3 @@
-#![forbid(missing_docs)]
-/*!
-# stacks-signer: a libary for creating a Stacks compliant signer. A default implementation binary is also provided.
-Usage documentation can be found in the [README](https://github.com/Trust-Machines/core-eng/stacks-signer-api/README.md).
-*/
-
 // Copyright (C) 2013-2020 Blockstack PBC, a public benefit corporation
 // Copyright (C) 2020-2024 Stacks Open Internet Foundation
 //
@@ -20,15 +14,7 @@ Usage documentation can be found in the [README](https://github.com/Trust-Machin
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-/// The cli module for the signer binary
 pub mod cli;
-/// The signer client for communicating with stackerdb/stacks nodes
-pub mod client;
-/// The configuration module for the signer
-pub mod config;
-/// Benchmark RTT in StackerDB.
-pub mod ping;
-/// The primary runloop for the signer
-pub mod runloop;
-/// Util functions
-pub mod utils;
+mod periodic_pinger;
+
+pub use periodic_pinger::PeriodicPinger;

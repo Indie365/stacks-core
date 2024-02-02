@@ -49,10 +49,11 @@ use stacks_common::codec::read_next;
 use stacks_common::types::chainstate::{StacksAddress, StacksPrivateKey, StacksPublicKey};
 use stacks_common::{debug, error};
 use stacks_signer::cli::{
-    Cli, Command, GenerateFilesArgs, GetChunkArgs, GetLatestChunkArgs, PutChunkArgs, RunDkgArgs,
-    SignArgs, StackerDBArgs,
+    Cli, Command, GenerateFilesArgs, GetChunkArgs, GetLatestChunkArgs, PutChunkArgs, RunArgs,
+    RunDkgArgs, SignArgs, StackerDBArgs,
 };
 use stacks_signer::config::{Config, Network};
+use stacks_signer::ping::PeriodicPinger;
 use stacks_signer::runloop::{RunLoop, RunLoopCommand};
 use stacks_signer::utils::{build_signer_config_tomls, build_stackerdb_contract};
 use tracing_subscriber::prelude::*;
@@ -65,6 +66,7 @@ struct SpawnedSigner {
     running_signer: RunningSigner<SignerEventReceiver, Vec<OperationResult>>,
     cmd_send: Sender<RunLoopCommand>,
     res_recv: Receiver<Vec<OperationResult>>,
+    ping_recv: Receiver<(u64, Duration)>,
 }
 
 /// Create a new stacker db session
@@ -96,7 +98,8 @@ fn spawn_running_signer(path: &PathBuf) -> SpawnedSigner {
         vec![config.stackerdb_contract_id.clone()],
         config.network.is_mainnet(),
     );
-    let runloop: RunLoop<FireCoordinator<v2::Aggregator>> = RunLoop::from(&config);
+    let mut runloop: RunLoop<FireCoordinator<v2::Aggregator>> = RunLoop::from(&config);
+    let ping_recv = runloop.subscribe_ping_collector();
     let mut signer: Signer<
         RunLoopCommand,
         Vec<OperationResult>,
@@ -108,6 +111,7 @@ fn spawn_running_signer(path: &PathBuf) -> SpawnedSigner {
         running_signer,
         cmd_send,
         res_recv,
+        ping_recv,
     }
 }
 
@@ -254,9 +258,18 @@ fn handle_dkg_sign(args: SignArgs) {
     spawned_signer.running_signer.stop();
 }
 
-fn handle_run(args: RunDkgArgs) {
+fn handle_run(args: RunArgs) {
     debug!("Running signer...");
-    let spawned_signer = spawn_running_signer(&args.config);
+    let spawned_signer = spawn_running_signer(&args.dkg_args.config);
+    if let Some(millis) = args.ping_in_millis {
+        PeriodicPinger::spawn(
+            spawned_signer.cmd_send.clone(),
+            Duration::from_millis(millis),
+            args.ping_payload_size.unwrap_or(0),
+            spawned_signer.ping_recv,
+        );
+    }
+
     println!("Signer spawned successfully. Waiting for messages to process...");
     // Wait for the spawned signer to stop (will only occur if an error occurs)
     let _ = spawned_signer.running_signer.join();
@@ -265,7 +278,7 @@ fn handle_run(args: RunDkgArgs) {
 fn handle_generate_files(args: GenerateFilesArgs) {
     debug!("Generating files...");
     let signer_stacks_private_keys = if let Some(path) = args.private_keys {
-        let file = File::open(&path).unwrap();
+        let file = File::open(path).unwrap();
         let reader = io::BufReader::new(file);
 
         let private_keys: Vec<String> = reader.lines().collect::<Result<_, _>>().unwrap();
@@ -293,7 +306,7 @@ fn handle_generate_files(args: GenerateFilesArgs) {
         .collect::<Vec<StacksAddress>>();
     // Build the signer and miner stackerdb contract
     let signer_stackerdb_contract =
-        build_stackerdb_contract(&signer_stacks_addresses, SIGNER_SLOTS_PER_USER);
+        build_stackerdb_contract(&signer_stacks_addresses, SIGNER_SLOTS_PER_USER, 4096);
     write_file(&args.dir, "signers.clar", &signer_stackerdb_contract);
 
     let signer_config_tomls = build_signer_config_tomls(
@@ -354,6 +367,7 @@ fn main() {
         Command::GenerateFiles(args) => {
             handle_generate_files(args);
         }
+        Command::Ping(subcommands) => subcommands.handle(),
     }
 }
 

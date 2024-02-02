@@ -39,13 +39,16 @@ mod tests;
 mod error;
 mod events;
 mod http;
+/// Benchmark RTT in StackerDB.
+pub mod ping;
 mod runloop;
 mod session;
 
 pub use crate::error::{EventError, RPCError};
 pub use crate::events::{
     BlockRejection, BlockResponse, EventReceiver, EventStopSignaler, RejectCode, SignerEvent,
-    SignerEventReceiver, SignerMessage, SignerStopSignaler, BLOCK_SLOT_ID, SIGNER_SLOTS_PER_USER,
+    SignerEventReceiver, SignerMessage, SignerStopSignaler, SlotId, BLOCK_SLOT_ID, PING_SLOT_ID,
+    SIGNER_SLOTS_PER_USER,
 };
 pub use crate::runloop::{RunningSigner, Signer, SignerRunLoop};
 pub use crate::session::{SignerSession, StackerDBSession};
