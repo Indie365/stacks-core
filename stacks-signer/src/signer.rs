@@ -22,12 +22,11 @@ use blockstack_lib::chainstate::nakamoto::{NakamotoBlock, NakamotoBlockVote};
 use blockstack_lib::chainstate::stacks::boot::SIGNERS_VOTING_FUNCTION_NAME;
 use blockstack_lib::chainstate::stacks::StacksTransaction;
 use blockstack_lib::net::api::postblock_proposal::BlockValidateResponse;
-use hashbrown::{HashMap, HashSet};
 use libsigner::{BlockRejection, BlockResponse, RejectCode, SignerEvent, SignerMessage};
 use slog::{slog_debug, slog_error, slog_info, slog_warn};
 use stacks_common::codec::{read_next, StacksMessageCodec};
 use stacks_common::types::chainstate::StacksAddress;
-use stacks_common::types::StacksEpochId;
+use stacks_common::types::{StacksEpochId, StacksHashMap as HashMap, StacksHashSet as HashSet};
 use stacks_common::util::hash::Sha512Trunc256Sum;
 use stacks_common::{debug, error, info, warn};
 use wsts::common::{MerkleRoot, Signature};
@@ -178,8 +177,8 @@ impl From<SignerConfig> for Signer {
             dkg_end_timeout: signer_config.dkg_end_timeout,
             nonce_timeout: signer_config.nonce_timeout,
             sign_timeout: signer_config.sign_timeout,
-            signer_key_ids: signer_config.signer_entries.coordinator_key_ids,
-            signer_public_keys: signer_config.signer_entries.signer_public_keys,
+            signer_key_ids: signer_config.signer_entries.coordinator_key_ids.into(),
+            signer_public_keys: signer_config.signer_entries.signer_public_keys.into(),
         };
 
         let coordinator = FireCoordinator::new(coordinator_config);
@@ -708,7 +707,7 @@ impl Signer {
     /// Get transactions from stackerdb for the given addresses and account nonces, filtering out any malformed transactions
     fn get_signer_transactions(
         &mut self,
-        nonces: &std::collections::HashMap<StacksAddress, u64>,
+        nonces: &HashMap<StacksAddress, u64>,
     ) -> Result<Vec<StacksTransaction>, ClientError> {
         let transactions: Vec<_> = self
             .stackerdb
@@ -741,7 +740,7 @@ impl Signer {
         let transactions: Vec<_> = self
             .stackerdb
             .get_next_transactions_with_retry(&self.next_signer_slot_ids)?;
-        let mut filtered_transactions = std::collections::HashMap::new();
+        let mut filtered_transactions = HashMap::new();
         NakamotoSigners::update_filtered_transactions(
             &mut filtered_transactions,
             &account_nonces,
@@ -925,8 +924,8 @@ impl Signer {
         &self,
         stacks_client: &StacksClient,
         signer_addresses: &[StacksAddress],
-    ) -> std::collections::HashMap<StacksAddress, u64> {
-        let mut account_nonces = std::collections::HashMap::with_capacity(signer_addresses.len());
+    ) -> HashMap<StacksAddress, u64> {
+        let mut account_nonces = HashMap::with_capacity(signer_addresses.len());
         for address in signer_addresses {
             let Ok(account_nonce) = retry_with_exponential_backoff(|| {
                 stacks_client

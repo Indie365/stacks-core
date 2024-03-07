@@ -20,8 +20,7 @@ pub mod natives;
 
 use std::collections::BTreeMap;
 
-use hashbrown::HashMap;
-use stacks_common::types::StacksEpochId;
+use stacks_common::types::{StacksEpochId, StacksHashMap as HashMap, StacksHashSet as HashSet};
 
 use self::contexts::ContractContext;
 pub use self::natives::{SimpleNativeFunction, TypedNativeFunction};

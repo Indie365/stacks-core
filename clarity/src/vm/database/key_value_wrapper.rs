@@ -16,9 +16,8 @@
 
 use std::hash::Hash;
 
-use hashbrown::HashMap;
 use stacks_common::types::chainstate::StacksBlockId;
-use stacks_common::types::StacksEpochId;
+use stacks_common::types::{StacksEpochId, StacksHashMap as HashMap, StacksHashSet as HashSet};
 use stacks_common::util::hash::Sha512Trunc256Sum;
 
 use super::clarity_store::SpecialCaseHandler;

@@ -17,11 +17,10 @@
 use std::collections::BTreeMap;
 use std::{cmp, fmt};
 
-use hashbrown::HashMap;
 use lazy_static::lazy_static;
 use rusqlite::types::{FromSql, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
 use serde::{Deserialize, Serialize};
-use stacks_common::types::StacksEpochId;
+use stacks_common::types::{StacksEpochId, StacksHashMap as HashMap, StacksHashSet as HashSet};
 
 use crate::boot_util::boot_code_id;
 use crate::vm::ast::ContractAST;
@@ -207,8 +206,14 @@ impl From<CostStateSummary> for SerializedCostStateSummary {
             cost_function_references,
         } = other;
         SerializedCostStateSummary {
-            contract_call_circuits: contract_call_circuits.into_iter().collect(),
-            cost_function_references: cost_function_references.into_iter().collect(),
+            contract_call_circuits: contract_call_circuits
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            cost_function_references: cost_function_references
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
         }
     }
 }

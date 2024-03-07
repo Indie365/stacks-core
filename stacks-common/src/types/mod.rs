@@ -15,6 +15,9 @@ use crate::util::secp256k1::{MessageSignature, Secp256k1PublicKey};
 pub mod chainstate;
 pub mod net;
 
+pub type StacksHashMap<K, V> = hashbrown::HashMap<K, V>;
+pub type StacksHashSet<T> = hashbrown::HashSet<T>;
+
 /// A container for public keys (compressed secp256k1 public keys)
 pub struct StacksPublicKeyBuffer(pub [u8; 33]);
 impl_array_newtype!(StacksPublicKeyBuffer, u8, 33);

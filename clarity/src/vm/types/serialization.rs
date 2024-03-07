@@ -17,11 +17,10 @@
 use std::io::{Read, Write};
 use std::{cmp, error, fmt, str};
 
-use hashbrown::HashMap;
 use lazy_static::lazy_static;
 use serde_json::Value as JSONValue;
 use stacks_common::codec::{Error as codec_error, StacksMessageCodec};
-use stacks_common::types::StacksEpochId;
+use stacks_common::types::{StacksEpochId, StacksHashMap as HashMap, StacksHashSet as HashSet};
 use stacks_common::util::hash::{hex_bytes, to_hex};
 use stacks_common::util::retry::BoundReader;
 

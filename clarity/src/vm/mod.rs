@@ -586,9 +586,8 @@ pub fn execute_v2(program: &str) -> Result<Option<Value>> {
 
 #[cfg(test)]
 mod test {
-    use hashbrown::HashMap;
     use stacks_common::consts::CHAIN_ID_TESTNET;
-    use stacks_common::types::StacksEpochId;
+    use stacks_common::types::{StacksEpochId, StacksHashMap as HashMap, StacksHashSet as HashSet};
 
     use super::ClarityVersion;
     use crate::vm::callables::{DefineType, DefinedFunction};

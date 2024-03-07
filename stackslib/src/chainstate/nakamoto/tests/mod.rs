@@ -15,7 +15,6 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::borrow::BorrowMut;
-use std::collections::HashMap;
 use std::fs;
 
 use clarity::types::chainstate::{PoxId, SortitionId, StacksBlockId};
@@ -35,7 +34,9 @@ use stacks_common::types::chainstate::{
     BlockHeaderHash, BurnchainHeaderHash, ConsensusHash, StacksAddress, StacksPrivateKey,
     StacksPublicKey, StacksWorkScore, TrieHash, VRFSeed,
 };
-use stacks_common::types::{Address, PrivateKey, StacksEpoch, StacksEpochId};
+use stacks_common::types::{
+    Address, PrivateKey, StacksEpoch, StacksEpochId, StacksHashMap as HashMap,
+};
 use stacks_common::util::get_epoch_time_secs;
 use stacks_common::util::hash::{hex_bytes, Hash160, MerkleTree, Sha512Trunc256Sum};
 use stacks_common::util::secp256k1::{MessageSignature, Secp256k1PublicKey};
@@ -2356,7 +2357,7 @@ fn valid_vote_transaction() {
         }),
     };
     valid_tx.set_origin_nonce(1);
-    let mut account_nonces = std::collections::HashMap::new();
+    let mut account_nonces = HashMap::new();
     account_nonces.insert(valid_tx.origin_address(), 1);
     assert!(NakamotoSigners::valid_vote_transaction(
         &account_nonces,
@@ -2577,7 +2578,7 @@ fn valid_vote_transaction_malformed_transactions() {
     };
     invalid_nonce.set_origin_nonce(0); // old nonce
 
-    let mut account_nonces = std::collections::HashMap::new();
+    let mut account_nonces = HashMap::new();
     account_nonces.insert(invalid_not_contract_call.origin_address(), 1);
     for tx in vec![
         invalid_not_contract_call,
@@ -2708,7 +2709,7 @@ fn filter_one_transaction_per_signer_multiple_addresses() {
     };
     valid_tx_2_address_2.set_origin_nonce(2);
     let mut filtered_transactions = HashMap::new();
-    let mut account_nonces = std::collections::HashMap::new();
+    let mut account_nonces = HashMap::new();
     account_nonces.insert(valid_tx_1_address_1.origin_address(), 1);
     account_nonces.insert(valid_tx_1_address_2.origin_address(), 1);
     NakamotoSigners::update_filtered_transactions(
@@ -2723,7 +2724,10 @@ fn filter_one_transaction_per_signer_multiple_addresses() {
             valid_tx_2_address_1,
         ],
     );
-    let txs: Vec<_> = filtered_transactions.into_values().collect();
+    let txs: Vec<_> = filtered_transactions
+        .iter()
+        .map(|(_, v)| v.clone())
+        .collect();
     assert_eq!(txs.len(), 2);
     assert!(txs.contains(&valid_tx_1_address_1));
     assert!(txs.contains(&valid_tx_1_address_2));
@@ -2805,7 +2809,7 @@ fn filter_one_transaction_per_signer_duplicate_nonces() {
     };
     valid_tx_3.set_origin_nonce(0);
 
-    let mut account_nonces = std::collections::HashMap::new();
+    let mut account_nonces = HashMap::new();
     account_nonces.insert(valid_tx_1.origin_address(), 0);
     let mut txs = vec![valid_tx_2, valid_tx_1, valid_tx_3];
     let mut filtered_transactions = HashMap::new();
@@ -2815,7 +2819,10 @@ fn filter_one_transaction_per_signer_duplicate_nonces() {
         false,
         txs.clone(),
     );
-    let filtered_txs: Vec<_> = filtered_transactions.into_values().collect();
+    let filtered_txs: Vec<_> = filtered_transactions
+        .iter()
+        .map(|(_, v)| v.clone())
+        .collect();
     txs.sort_by(|a, b| a.txid().cmp(&b.txid()));
     assert_eq!(filtered_txs.len(), 1);
     assert!(filtered_txs.contains(&txs.first().expect("failed to get first tx")));

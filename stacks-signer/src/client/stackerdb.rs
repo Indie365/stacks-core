@@ -19,13 +19,13 @@ use blockstack_lib::chainstate::stacks::StacksTransaction;
 use blockstack_lib::util_lib::boot::boot_code_addr;
 use clarity::vm::types::QualifiedContractIdentifier;
 use clarity::vm::ContractName;
-use hashbrown::HashMap;
 use libsigner::{SignerMessage, SignerSession, StackerDBSession, TRANSACTIONS_MSG_ID};
 use libstackerdb::{StackerDBChunkAckData, StackerDBChunkData};
 use slog::{slog_debug, slog_warn};
 use stacks_common::codec::{read_next, StacksMessageCodec};
 use stacks_common::consts::SIGNER_SLOTS_PER_USER;
 use stacks_common::types::chainstate::StacksPrivateKey;
+use stacks_common::types::StacksHashMap as HashMap;
 use stacks_common::{debug, warn};
 
 use super::ClientError;

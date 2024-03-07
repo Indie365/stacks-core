@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::hash::Hash;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,13 +30,13 @@ use blockstack_lib::net::api::postblock_proposal::{
 use blockstack_lib::util_lib::boot::boot_code_id;
 use clarity::vm::types::serialization::SerializationError;
 use clarity::vm::types::QualifiedContractIdentifier;
-use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use stacks_common::codec::{
     read_next, read_next_at_most, read_next_exact, write_next, Error as CodecError,
     StacksMessageCodec,
 };
 use stacks_common::consts::SIGNER_SLOTS_PER_USER;
+use stacks_common::types::{StacksHashMap as HashMap, StacksHashSet as HashSet};
 use stacks_common::util::hash::Sha512Trunc256Sum;
 use tiny_http::{
     Method as HttpMethod, Request as HttpRequest, Response as HttpResponse, Server as HttpServer,
@@ -299,7 +300,7 @@ impl StacksMessageCodecExtensions for BadPrivateShare {
 impl StacksMessageCodecExtensions for HashSet<u32> {
     fn inner_consensus_serialize<W: Write>(&self, fd: &mut W) -> Result<(), CodecError> {
         write_next(fd, &(self.len() as u32))?;
-        for i in self {
+        for i in self.iter() {
             write_next(fd, i)?;
         }
         Ok(())
@@ -541,12 +542,14 @@ impl StacksMessageCodecExtensions for DkgPrivateShares {
             let id = read_next::<u32, _>(fd)?;
             let num_share_map = read_next::<u32, _>(fd)?;
             let mut share_map = HashMap::new();
+
             for _ in 0..num_share_map {
                 let id = read_next::<u32, _>(fd)?;
                 let share: Vec<u8> = read_next(fd)?;
                 share_map.insert(id, share);
             }
-            shares.push((id, share_map));
+            //let share_map: hashbrown::HashMap<_, _> = share_map.into();
+            shares.push((id, share_map.into()));
         }
         Ok(DkgPrivateShares {
             dkg_id,
@@ -1338,6 +1341,7 @@ mod test {
                 rng.fill(&mut bytes[..]);
                 shares_map.insert(i, bytes.to_vec());
             }
+            let shares_map: hashbrown::HashMap<_, _> = shares_map.into();
             shares.push((i, shares_map));
         }
         test_fixture_packet(Message::DkgPrivateShares(DkgPrivateShares {

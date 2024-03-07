@@ -20,14 +20,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use blockstack_lib::chainstate::stacks::TransactionVersion;
-use hashbrown::{HashMap, HashSet};
 use serde::Deserialize;
 use stacks_common::address::{
     AddressHashMode, C32_ADDRESS_VERSION_MAINNET_SINGLESIG, C32_ADDRESS_VERSION_TESTNET_SINGLESIG,
 };
 use stacks_common::consts::{CHAIN_ID_MAINNET, CHAIN_ID_TESTNET};
 use stacks_common::types::chainstate::{StacksAddress, StacksPrivateKey, StacksPublicKey};
-use stacks_common::types::PrivateKey;
+use stacks_common::types::{PrivateKey, StacksHashMap as HashMap, StacksHashSet as HashSet};
 use wsts::curve::point::Point;
 use wsts::curve::scalar::Scalar;
 use wsts::state_machine::PublicKeys;

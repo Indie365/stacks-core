@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use hashbrown::{HashMap, HashSet};
+use stacks_common::types::{StacksHashMap as HashMap, StacksHashSet as HashSet};
 
 use crate::vm::analysis::AnalysisDatabase;
 use crate::vm::ast::errors::{ParseError, ParseErrors, ParseResult};
@@ -158,11 +158,8 @@ impl TraitsResolver {
             };
         }
 
-        for (trait_reference, expr) in referenced_traits {
-            if !contract_ast
-                .referenced_traits
-                .contains_key(&trait_reference)
-            {
+        for (trait_reference, expr) in referenced_traits.iter() {
+            if !contract_ast.referenced_traits.contains_key(trait_reference) {
                 let mut err = ParseError::new(ParseErrors::TraitReferenceUnknown(
                     trait_reference.to_string(),
                 ));

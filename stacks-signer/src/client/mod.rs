@@ -139,14 +139,15 @@ pub(crate) mod tests {
     use clarity::vm::costs::ExecutionCost;
     use clarity::vm::types::TupleData;
     use clarity::vm::Value as ClarityValue;
-    use hashbrown::{HashMap, HashSet};
     use rand::distributions::Standard;
     use rand::{thread_rng, Rng};
     use rand_core::{OsRng, RngCore};
     use stacks_common::types::chainstate::{
         BlockHeaderHash, ConsensusHash, StacksAddress, StacksPrivateKey, StacksPublicKey,
     };
-    use stacks_common::types::{StacksEpochId, StacksPublicKeyBuffer};
+    use stacks_common::types::{
+        StacksEpochId, StacksHashMap as HashMap, StacksHashSet as HashSet, StacksPublicKeyBuffer,
+    };
     use stacks_common::util::hash::{Hash160, Sha256Sum};
     use wsts::curve::ecdsa;
     use wsts::curve::point::{Compressed, Point};
@@ -432,8 +433,8 @@ pub(crate) mod tests {
             "Cannot generate 0 keys for the provided signers...Specify at least 1 key."
         );
         let mut public_keys = PublicKeys {
-            signers: HashMap::new(),
-            key_ids: HashMap::new(),
+            signers: hashbrown::HashMap::new(),
+            key_ids: hashbrown::HashMap::new(),
         };
         let reward_cycle = thread_rng().next_u64();
         let rng = &mut OsRng;

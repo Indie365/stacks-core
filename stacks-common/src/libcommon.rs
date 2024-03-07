@@ -35,6 +35,13 @@ pub mod bitvec;
 
 use crate::types::chainstate::{BlockHeaderHash, BurnchainHeaderHash, SortitionId, StacksBlockId};
 
+#[cfg(any(test, feature = "testing"))]
+#[macro_use]
+extern crate proptest;
+
+#[cfg(any(test, feature = "testing"))]
+pub mod proptesting;
+
 pub mod consts {
     use crate::types::chainstate::{BlockHeaderHash, ConsensusHash};
 
