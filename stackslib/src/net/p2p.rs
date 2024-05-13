@@ -410,7 +410,7 @@ impl PeerNetwork {
         );
         let pub_ip = connection_opts.public_ip_address.clone();
         let pub_ip_learned = pub_ip.is_none();
-        local_peer.public_ip_address = pub_ip.clone();
+        local_peer.public_ip_address.clone_from(&pub_ip);
 
         if connection_opts.disable_inbound_handshakes {
             debug!("{:?}: disable inbound handshakes", &local_peer);
@@ -5277,7 +5277,8 @@ impl PeerNetwork {
     /// Get the local peer from the peer DB, but also preserve the public IP address
     pub fn load_local_peer(&self) -> Result<LocalPeer, net_error> {
         let mut lp = PeerDB::get_local_peer(&self.peerdb.conn())?;
-        lp.public_ip_address = self.local_peer.public_ip_address.clone();
+        lp.public_ip_address
+            .clone_from(&self.local_peer.public_ip_address);
         Ok(lp)
     }
 
@@ -6516,8 +6517,8 @@ mod test {
             .map(|a| (a.to_account_principal(), 1000000000))
             .collect();
 
-        peer_1_config.initial_balances = initial_balances.clone();
-        peer_2_config.initial_balances = initial_balances.clone();
+        peer_1_config.initial_balances.clone_from(&initial_balances);
+        peer_2_config.initial_balances.clone_from(&initial_balances);
 
         let mut peer_1 = TestPeer::new(peer_1_config);
         let mut peer_2 = TestPeer::new(peer_2_config);
@@ -6750,7 +6751,7 @@ mod test {
         // peer 2 has none of the old ones
         for tx in peer_2_mempool_txs {
             assert_eq!(&tx.tx, txs.get(&tx.tx.txid()).unwrap());
-            assert!(old_txs.get(&tx.tx.txid()).is_none());
+            assert!(!old_txs.contains_key(&tx.tx.txid()));
         }
     }
 
@@ -6774,8 +6775,8 @@ mod test {
             .map(|a| (a.to_account_principal(), 1000000000))
             .collect();
 
-        peer_1_config.initial_balances = initial_balances.clone();
-        peer_2_config.initial_balances = initial_balances.clone();
+        peer_1_config.initial_balances.clone_from(&initial_balances);
+        peer_2_config.initial_balances.clone_from(&initial_balances);
 
         let mut peer_1 = TestPeer::new(peer_1_config);
         let mut peer_2 = TestPeer::new(peer_2_config);
@@ -6959,8 +6960,8 @@ mod test {
             .map(|a| (a.to_account_principal(), 1000000000))
             .collect();
 
-        peer_1_config.initial_balances = initial_balances.clone();
-        peer_2_config.initial_balances = initial_balances.clone();
+        peer_1_config.initial_balances.clone_from(&initial_balances);
+        peer_2_config.initial_balances.clone_from(&initial_balances);
 
         let mut peer_1 = TestPeer::new(peer_1_config);
         let mut peer_2 = TestPeer::new(peer_2_config);
@@ -7165,8 +7166,8 @@ mod test {
             .map(|a| (a.to_account_principal(), 1000000000))
             .collect();
 
-        peer_1_config.initial_balances = initial_balances.clone();
-        peer_2_config.initial_balances = initial_balances.clone();
+        peer_1_config.initial_balances.clone_from(&initial_balances);
+        peer_2_config.initial_balances.clone_from(&initial_balances);
 
         let mut peer_1 = TestPeer::new(peer_1_config);
         let mut peer_2 = TestPeer::new(peer_2_config);
