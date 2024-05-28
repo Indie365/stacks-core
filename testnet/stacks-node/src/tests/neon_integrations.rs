@@ -12163,7 +12163,20 @@ fn bitcoin_reorg_flap() {
         .start_bitcoind()
         .expect("Failed starting bitcoind");
 
-    let mut btc_regtest_controller = BitcoinRegtestController::new(conf.clone(), None);
+    let mut burnchain_config = Burnchain::regtest(&conf.get_burn_db_path());
+
+    let mut pox_constants = PoxConstants::regtest_default();
+    pox_constants.reward_cycle_length = 15;
+    pox_constants.prepare_length = 5;
+    pox_constants.anchor_threshold = 10;
+    burnchain_config.pox_constants = pox_constants.clone();
+
+    let mut btc_regtest_controller = BitcoinRegtestController::with_burnchain(
+        conf.clone(),
+        None,
+        Some(burnchain_config.clone()),
+        None,
+    );
 
     btc_regtest_controller.bootstrap_chain(201);
 
@@ -12197,6 +12210,8 @@ fn bitcoin_reorg_flap() {
     // stop bitcoind and copy its DB to simulate a chain flap
     btcd_controller.stop_bitcoind().unwrap();
     thread::sleep(Duration::from_secs(5));
+    // kill bitcoind to make sure it's really stopped
+    btcd_controller.kill_bitcoind();
 
     let btcd_dir = conf.get_burnchain_path_str();
     let mut new_conf = conf.clone();
@@ -12211,7 +12226,12 @@ fn bitcoin_reorg_flap() {
         .start_bitcoind()
         .expect("Failed starting bitcoind");
 
-    let btc_regtest_controller = BitcoinRegtestController::new(conf.clone(), None);
+    let btc_regtest_controller = BitcoinRegtestController::with_burnchain(
+        conf.clone(),
+        None,
+        Some(burnchain_config.clone()),
+        None,
+    );
     thread::sleep(Duration::from_secs(5));
 
     info!("\n\nBegin fork A\n\n");
@@ -12223,12 +12243,20 @@ fn bitcoin_reorg_flap() {
     }
 
     btcd_controller.stop_bitcoind().unwrap();
+    thread::sleep(Duration::from_secs(5));
+    // kill bitcoind to make sure it's really stopped
+    btcd_controller.kill_bitcoind();
 
     info!("\n\nBegin reorg flap from A to B\n\n");
 
     // carry out the flap to fork B -- new_conf's state was the same as before the reorg
     let mut btcd_controller = BitcoinCoreController::new(new_conf.clone());
-    let btc_regtest_controller = BitcoinRegtestController::new(new_conf.clone(), None);
+    let btc_regtest_controller = BitcoinRegtestController::with_burnchain(
+        conf.clone(),
+        None,
+        Some(burnchain_config.clone()),
+        None,
+    );
 
     btcd_controller
         .start_bitcoind()
@@ -12240,11 +12268,19 @@ fn bitcoin_reorg_flap() {
     }
 
     btcd_controller.stop_bitcoind().unwrap();
+    thread::sleep(Duration::from_secs(5));
+    // kill bitcoind to make sure it's really stopped
+    btcd_controller.kill_bitcoind();
 
     info!("\n\nBegin reorg flap from B to A\n\n");
 
     let mut btcd_controller = BitcoinCoreController::new(conf.clone());
-    let btc_regtest_controller = BitcoinRegtestController::new(conf.clone(), None);
+    let btc_regtest_controller = BitcoinRegtestController::with_burnchain(
+        conf.clone(),
+        None,
+        Some(burnchain_config.clone()),
+        None,
+    );
     btcd_controller
         .start_bitcoind()
         .expect("Failed starting bitcoind");
